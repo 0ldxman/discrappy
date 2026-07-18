@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Discord Scraper</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Discord&nbsp;→&nbsp;Nextcloud скрэппер</h1>
+    <button id="toggle-settings" class="ghost">⚙ Настройки</button>
+  </header>
+
+  <!-- ------------------------- Настройки ------------------------- -->
+  <section id="settings" class="card hidden">
+    <h2>Настройки</h2>
+    <div class="grid">
+      <label>ID сервера (Guild ID)
+        <input id="guild_id" placeholder="123456789012345678">
+      </label>
+      <label>Токен бота
+        <input id="discord_token" type="password" placeholder="оставь пустым, чтобы не менять">
+        <span id="discord_token_state" class="badge"></span>
+      </label>
+      <label>Nextcloud URL
+        <input id="nextcloud_url" placeholder="https://cloud.example.com">
+      </label>
+      <label>Nextcloud логин
+        <input id="nextcloud_user" placeholder="dave">
+      </label>
+      <label>Nextcloud app-password
+        <input id="nextcloud_app_password" type="password" placeholder="оставь пустым, чтобы не менять">
+        <span id="nextcloud_app_password_state" class="badge"></span>
+      </label>
+      <label>Папка по умолчанию
+        <input id="nextcloud_dir" placeholder="discord-scrapes">
+      </label>
+      <label>Фильтр по ID автора (через запятую)
+        <input id="author_ids" placeholder="напр. ID бота-персонажа">
+      </label>
+      <label>Белый список имён (через запятую)
+        <input id="character_names" placeholder="пусто = любой персонаж">
+      </label>
+      <label>Часовой пояс
+        <input id="timezone" placeholder="Europe/Warsaw">
+      </label>
+      <label>Формат времени
+        <input id="time_format" placeholder="%Y-%m-%d %H:%M:%S">
+      </label>
+    </div>
+    <div class="row">
+      <button id="save-settings">Сохранить</button>
+      <span id="settings-status" class="muted"></span>
+    </div>
+  </section>
+
+  <div class="columns">
+    <!-- ------------------------- Каналы ------------------------- -->
+    <section class="card">
+      <h2>Каналы</h2>
+      <div class="row">
+        <button id="load-channels">Загрузить список</button>
+        <input id="channel-search" placeholder="поиск по названию…" class="grow">
+      </div>
+      <div class="row small">
+        <a href="#" id="select-all">выбрать все</a> ·
+        <a href="#" id="select-none">снять все</a>
+        <span id="channels-count" class="muted"></span>
+      </div>
+      <div id="channels" class="list"></div>
+    </section>
+
+    <!-- ------------------------- Параметры запуска ------------------------- -->
+    <section class="card">
+      <h2>Параметры</h2>
+      <div class="grid">
+        <label>Дата от (ISO)
+          <input id="after" placeholder="2026-01-01">
+        </label>
+        <label>Дата до (ISO)
+          <input id="before" placeholder="2026-07-01">
+        </label>
+        <label>Имя файла
+          <input id="filename" placeholder="scrape-<дата>.txt">
+        </label>
+        <label>Папка назначения (Nextcloud)
+          <input id="dest_dir" placeholder="discord-scrapes">
+        </label>
+      </div>
+      <div class="row small">
+        <button id="browse-folders" class="ghost">Показать папки</button>
+        <span id="folder-list" class="muted"></span>
+      </div>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="upload" checked> Заливать на Nextcloud</label>
+        <label class="check"><input type="checkbox" id="share" checked> Публичная ссылка</label>
+      </div>
+      <button id="run" class="primary">▶ Запустить скрэппинг</button>
+    </section>
+  </div>
+
+  <!-- ------------------------- Live-лог ------------------------- -->
+  <section class="card">
+    <h2>Ход выполнения
+      <span id="counter" class="muted"></span>
+    </h2>
+    <div id="result" class="result hidden"></div>
+    <div id="log" class="log"></div>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>

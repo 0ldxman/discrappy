@@ -1,0 +1,6 @@
+.env
+output*.txt
+scrape-*.txt
+data/
+__pycache__/
+.venv/

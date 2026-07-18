@@ -1,0 +1,19 @@
+services:
+  discrapp:
+    build: .
+    image: discrapp:latest
+    container_name: discrapp
+    ports:
+      - "8000:8000"
+    volumes:
+      - discrapp-data:/data          # config.json и собранные файлы (переживают пересборку)
+    environment:
+      DATA_DIR: /data
+      # Кому разрешено встраивать UI в iframe (Nextcloud External Sites).
+      # Задаётся в Portainer -> Stack -> Environment variables. Несколько
+      # источников через пробел, напр.: 'self' https://cloud.example.com
+      FRAME_ANCESTORS: ${FRAME_ANCESTORS:-'self'}
+    restart: unless-stopped
+
+volumes:
+  discrapp-data:

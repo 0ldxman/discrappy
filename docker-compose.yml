@@ -4,8 +4,11 @@ services:
     image: ghcr.io/0ldxman/discrappy:latest
     container_name: discrapp
     pull_policy: always            # при redeploy подтягивать свежий образ
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"                     # порт виден внутри web_network — через него ходит NPM
+    # Прямой доступ по IP:8000 не нужен (проксирует NPM). Раскомментируй для отладки:
+    # ports:
+    #   - "8000:8000"
     volumes:
       - discrapp-data:/data        # config.json и собранные файлы (переживают пересборку)
     environment:
@@ -13,7 +16,13 @@ services:
       # Кому разрешено встраивать UI в iframe (Nextcloud External Sites).
       # Не секрет — задаётся прямо здесь. Несколько источников через пробел.
       FRAME_ANCESTORS: "'self' https://notes.omc.root.sx"
+    networks:
+      - web_network
     restart: unless-stopped
+
+networks:
+  web_network:
+    external: true                 # сеть уже создана (в ней крутится NPM)
 
 volumes:
   discrapp-data:

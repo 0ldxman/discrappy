@@ -124,6 +124,20 @@ async def get_channels(token: str, guild_id: str) -> list[Channel]:
     return channels
 
 
+async def get_recent_messages(
+    token: str, channel_id: str, limit: int = 50
+) -> list[dict]:
+    """Последние `limit` (макс. 100) сообщений канала, в порядке от старых к новым.
+    Используется для образца/предпросмотра — одна быстрая страница."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        data = await _get(
+            client, token, f"/channels/{channel_id}/messages",
+            limit=max(1, min(limit, 100)),
+        )
+    data.reverse()  # Discord отдаёт newest-first -> делаем oldest-first
+    return data
+
+
 async def iter_messages(
     token: str,
     channel_id: str,

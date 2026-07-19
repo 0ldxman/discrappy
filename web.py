@@ -228,6 +228,61 @@ async def folders(path: str = "") -> dict:
     return {"path": path.strip("/"), "folders": subfolders}
 
 
+@app.post("/api/preview")
+async def preview(payload: dict) -> dict:
+    """
+    Образец последних сообщений канала с классификацией каждого embed'а
+    (взято/отброшено и почему) + структурные признаки (color/thumbnail/fields)
+    для подбора фильтров. Использует токен и фильтры из сохранённого конфига,
+    переопределяемые полями payload.
+    """
+    stored = config_store.load()
+    token = stored.get("discord_token", "").strip()
+    if not token:
+        raise HTTPException(400, "Токен бота не задан.")
+    channel_id = str(payload.get("channel_id") or "").strip()
+    if not channel_id:
+        raise HTTPException(400, "Не выбран канал для предпросмотра.")
+    limit = int(payload.get("limit", 50) or 50)
+
+    cfg = _cfg_from_params({**stored, **payload})
+    try:
+        messages = await discord_rest.get_recent_messages(token, channel_id, limit)
+    except discord_rest.DiscordError as exc:
+        raise HTTPException(400, str(exc))
+
+    items: list[dict] = []
+    kept = 0
+    dropped: dict[str, int] = {}
+    for msg in messages:
+        author_id = int(msg.get("author", {}).get("id", 0))
+        created = datetime.fromisoformat(msg["timestamp"])
+        for embed in msg.get("embeds", []):
+            name = (embed.get("author") or {}).get("name") or embed.get("title")
+            desc = embed.get("description")
+            if cfg.author_ids and author_id not in cfg.author_ids:
+                ok, reason = False, "другой автор"
+            else:
+                ok, reason = core.classify(name, desc, cfg)
+            items.append({
+                "ts": core.format_timestamp(created, cfg),
+                "name": (name or "").strip(),
+                "text": (desc or "").strip()[:280],
+                "color": embed.get("color"),
+                "has_thumbnail": "thumbnail" in embed,
+                "has_fields": bool(embed.get("fields")),
+                "author_id": str(author_id),
+                "kept": ok,
+                "reason": reason,
+            })
+            if ok:
+                kept += 1
+            else:
+                dropped[reason] = dropped.get(reason, 0) + 1
+
+    return {"total": len(items), "kept": kept, "dropped": dropped, "items": items}
+
+
 @app.post("/api/scrape")
 async def start_scrape(params: dict) -> dict:
     job = Job(id=uuid.uuid4().hex)

@@ -101,21 +101,29 @@ class ScrapeResult:
 
 # --- Отбор и форматирование --------------------------------------------------
 
-def is_character(name: str | None, description: str | None, cfg: ScrapeConfig) -> bool:
-    """Проходит ли embed под критерии реплики персонажа (с учётом фильтров)."""
-    if not name or not description:
-        return False
+def classify(
+    name: str | None, description: str | None, cfg: ScrapeConfig
+) -> tuple[bool, str]:
+    """Вердикт по embed'у: (взято?, причина). Единый источник правды для
+    is_character и предпросмотра."""
+    if not name or not name.strip():
+        return (False, "нет имени")
+    if not description or not description.strip():
+        return (False, "нет текста")
     name = name.strip()
     text = description.strip()
-    if not name or not text:
-        return False
     if cfg.name_whitelist and not _match_any(name, cfg.name_whitelist):
-        return False
+        return (False, "не в белом списке имён")
     if cfg.name_blacklist and _match_any(name, cfg.name_blacklist):
-        return False
+        return (False, "имя в чёрном списке")
     if cfg.text_blacklist and _match_any(text, cfg.text_blacklist):
-        return False
-    return True
+        return (False, "текст в чёрном списке")
+    return (True, "ок")
+
+
+def is_character(name: str | None, description: str | None, cfg: ScrapeConfig) -> bool:
+    """Проходит ли embed под критерии реплики персонажа (с учётом фильтров)."""
+    return classify(name, description, cfg)[0]
 
 
 def format_timestamp(created_at: datetime, cfg: ScrapeConfig) -> str:

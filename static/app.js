@@ -114,6 +114,55 @@ async function browseFolders() {
   } catch (e) { out.textContent = "Ошибка: " + e.message; }
 }
 
+// ------------------------------- Предпросмотр ------------------------------
+
+const hex = (color) => color == null ? null : "#" + color.toString(16).padStart(6, "0");
+
+async function preview() {
+  if (selected.size === 0) { alert("Выбери канал для предпросмотра."); return; }
+  const first = channels.find((c) => selected.has(c.id));
+  const summary = $("preview-summary");
+  const table = $("preview-table");
+  $("preview-overlay").classList.remove("hidden");
+  summary.textContent = "Загрузка образца…";
+  table.innerHTML = "";
+  try {
+    const res = await fetch("/api/preview", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel_id: first.id, limit: 50 }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || "ошибка");
+    const data = await res.json();
+    renderPreview(data, first.name);
+  } catch (e) { summary.innerHTML = `<span class="l-err">Ошибка: ${esc(e.message)}</span>`; }
+}
+
+function renderPreview(data, chanName) {
+  const dropChips = Object.entries(data.dropped)
+    .map(([r, n]) => `<span class="tag drop">${esc(r)}: ${n}</span>`).join("");
+  $("preview-summary").innerHTML =
+    `<b>#${esc(chanName)}</b> · эмбедов: ${data.total} ` +
+    `<span class="tag kept">взято: ${data.kept}</span>${dropChips}`;
+
+  const rows = data.items.map((it) => {
+    const sw = it.color != null
+      ? `<span class="swatch" style="background:${hex(it.color)}" title="${hex(it.color)}"></span>` : "—";
+    const verdict = it.kept ? "✓ взято" : esc(it.reason);
+    return `<tr class="${it.kept ? "kept" : "drop"}">
+      <td>${esc(it.ts)}</td>
+      <td class="nm">${esc(it.name) || "—"}</td>
+      <td class="ctr">${sw}</td>
+      <td class="ctr">${it.has_thumbnail ? "🖼" : "·"}</td>
+      <td class="ctr">${it.has_fields ? "🔖" : "·"}</td>
+      <td class="verdict">${verdict}</td>
+      <td class="txt">${esc(it.text)}</td>
+    </tr>`;
+  }).join("");
+  $("preview-table").innerHTML =
+    `<thead><tr><th>время</th><th>имя</th><th>цвет</th><th>🖼</th><th>🔖</th>
+      <th>вердикт</th><th>текст</th></tr></thead><tbody>${rows}</tbody>`;
+}
+
 // ------------------------------- Запуск + SSE ------------------------------
 
 const esc = (s) => (s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -228,8 +277,13 @@ $("channel-search").oninput = renderChannels;
 $("browse-folders").onclick = browseFolders;
 $("run").onclick = run;
 $("stop").onclick = stop;
+$("preview").onclick = preview;
+$("close-preview").onclick = () => $("preview-overlay").classList.add("hidden");
+$("preview-overlay").onclick = (e) => { if (e.target === $("preview-overlay")) $("preview-overlay").classList.add("hidden"); };
 $("select-all").onclick = (e) => { e.preventDefault(); channels.forEach((c) => selected.add(c.id)); renderChannels(); };
 $("select-none").onclick = (e) => { e.preventDefault(); selected.clear(); renderChannels(); };
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSettings(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closeSettings(); $("preview-overlay").classList.add("hidden"); }
+});
 
 loadConfig();

@@ -171,4 +171,22 @@ fieldset .field { margin-top: 8px; }
 .fs-hint { font-size: .76rem; color: var(--muted); margin: 2px 0 6px; }
 code { font-family: var(--mono); background: var(--card-2); padding: 0 4px; border-radius: 4px; }
 
+/* ------------------------------- Preview --------------------------------- */
+.modal.wide { max-width: 940px; }
+.prev-summary { margin: 4px 0 10px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.prev-summary .tag { padding: 2px 9px; border-radius: 20px; font-weight: 600; font-size: .74rem; }
+.prev-summary .tag.kept { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+.prev-summary .tag.drop { background: color-mix(in srgb, var(--err) 16%, transparent); color: var(--err); }
+.prev-wrap { max-height: 60vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.prev-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.prev-table th, .prev-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.prev-table th { position: sticky; top: 0; background: var(--card-2); z-index: 1; font-size: .72rem; color: var(--muted); }
+.prev-table tr.drop { opacity: .55; }
+.prev-table tr.kept td.verdict { color: var(--ok); font-weight: 600; }
+.prev-table td.verdict { color: var(--err); white-space: nowrap; }
+.prev-table td.txt { max-width: 340px; }
+.prev-table .nm { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.swatch { display: inline-block; width: 13px; height: 13px; border-radius: 3px; border: 1px solid var(--border); vertical-align: middle; }
+.ctr { text-align: center; }
+
 .hidden { display: none !important; }

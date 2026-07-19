@@ -54,6 +54,10 @@
           </label>
         </div>
         <div id="folder-list" class="muted small"></div>
+        <div class="toolbar" style="margin-top:12px">
+          <button id="preview" class="btn ghost">👁 Предпросмотр образца</button>
+          <span class="hint">классифицирует последние сообщения первого выбранного канала</span>
+        </div>
         <div class="toggles">
           <label class="switch"><input type="checkbox" id="upload" checked><span>Заливать на Nextcloud</span></label>
           <label class="switch"><input type="checkbox" id="share" checked><span>Публичная ссылка</span></label>
@@ -148,6 +152,22 @@
       <div class="modal-foot">
         <span id="settings-status" class="muted small"></span>
         <button id="save-settings" class="btn primary">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ----------------------------- Предпросмотр (модалка) --------------- -->
+  <div id="preview-overlay" class="overlay hidden">
+    <div class="modal wide">
+      <div class="modal-head">
+        <h2>Предпросмотр образца</h2>
+        <button id="close-preview" class="btn ghost icon">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="preview-summary" class="prev-summary muted small"></div>
+        <div class="prev-wrap"><table id="preview-table" class="prev-table"></table></div>
+        <p class="fs-hint">Столбцы «цвет», «🖼 превью», «🔖 поля» помогают заметить, чем
+          служебные эмбеды структурно отличаются от персонажных — по ним потом настроим фильтры.</p>
       </div>
     </div>
   </div>

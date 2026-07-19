@@ -31,7 +31,9 @@ _DEFAULTS: dict = {
     "nextcloud_dir": "discord-scrapes",
     # значения по умолчанию для формы скрэппинга
     "author_ids": "",
-    "character_names": "",
+    "character_names": "",   # белый список имён (маски)
+    "name_blacklist": "",    # чёрный список имён (маски)
+    "text_blacklist": "",    # чёрный список по тексту (маски) — отсев служебных
     "timezone": "",
     "time_format": "%Y-%m-%d %H:%M:%S",
 }

@@ -20,7 +20,6 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -61,12 +60,13 @@ JOBS: dict[str, Job] = {}
 
 
 def _cfg_from_params(p: dict) -> core.ScrapeConfig:
-    tz = p.get("timezone", "").strip()
-    return core.ScrapeConfig(
-        author_ids=core._parse_id_list(p.get("author_ids", "")),
-        character_names=core._parse_name_list(p.get("character_names", "")),
-        timezone=ZoneInfo(tz) if tz else None,
-        time_format=p.get("time_format", "").strip() or "%Y-%m-%d %H:%M:%S",
+    return core.ScrapeConfig.build(
+        author_ids=p.get("author_ids", ""),
+        name_whitelist=p.get("character_names", ""),
+        name_blacklist=p.get("name_blacklist", ""),
+        text_blacklist=p.get("text_blacklist", ""),
+        timezone=p.get("timezone", ""),
+        time_format=p.get("time_format", ""),
     )
 
 
@@ -125,7 +125,7 @@ async def _run_job(job: Job, params: dict) -> None:
                         # имя персонажа: сначала author.name, затем title (фолбэк)
                         name = (embed.get("author") or {}).get("name") or embed.get("title")
                         desc = embed.get("description")
-                        if not core.is_character(name, desc, cfg.character_names):
+                        if not core.is_character(name, desc, cfg):
                             continue
                         out.write(core.format_line(name, desc, created, cfg))
                         total_lines += 1

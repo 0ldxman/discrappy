@@ -12,6 +12,8 @@ const SECRET_FIELDS = ["discord_token", "nextcloud_app_password"];
 
 let channels = [];        // {id,name,type_name,is_thread,...}
 const selected = new Set();
+let currentJob = null;    // id текущей задачи (для остановки)
+let currentES = null;     // текущий EventSource
 
 // ------------------------------- Настройки ---------------------------------
 
@@ -125,6 +127,21 @@ function logLine(html) {
   log.scrollTop = log.scrollHeight;
 }
 
+function setRunning(running) {
+  $("run").classList.toggle("hidden", running);
+  $("stop").classList.toggle("hidden", !running);
+  $("stop").disabled = false;
+}
+
+async function stop() {
+  if (!currentJob) return;
+  $("stop").disabled = true;
+  logLine('<span class="l-sys">Останавливаю…</span>');
+  try {
+    await fetch(`/api/scrape/${currentJob}/stop`, { method: "POST" });
+  } catch { /* сервер всё равно закроет поток */ }
+}
+
 async function run() {
   if (selected.size === 0) { alert("Выбери хотя бы один канал."); return; }
   $("log").innerHTML = "";
@@ -151,9 +168,14 @@ async function run() {
     }).then((r) => r.json());
   } catch { logLine('<span class="l-err">Не удалось запустить задачу.</span>'); return; }
 
+  currentJob = job.job_id;
+  setRunning(true);
+
   const es = new EventSource(`/api/scrape/${job.job_id}/events`);
-  es.addEventListener("end", () => es.close());
-  es.onerror = () => es.close();
+  currentES = es;
+  const finish = () => { es.close(); setRunning(false); currentJob = null; currentES = null; };
+  es.addEventListener("end", finish);
+  es.onerror = finish;
   es.onmessage = (ev) => {
     const e = JSON.parse(ev.data);
     switch (e.type) {
@@ -167,12 +189,12 @@ async function run() {
       case "status":
         logLine(`<span class="l-sys">${esc(e.message)}</span>`); break;
       case "done":
-        showResult(e); es.close(); break;
+        showResult(e); break;          // закрытие потока сделает событие "end"
       case "error": {
         const box = $("result");
         box.className = "result err";
         box.innerHTML = `Ошибка: ${esc(e.message)}`;
-        es.close(); break;
+        break;
       }
     }
   };
@@ -181,8 +203,14 @@ async function run() {
 function showResult(e) {
   const box = $("result");
   box.className = "result";
-  if (!e.lines) { box.innerHTML = e.message || "Готово, но реплик не найдено."; return; }
-  let html = `Готово: собрано <b>${e.lines}</b> реплик.`;
+  if (!e.lines) {
+    box.innerHTML = e.stopped ? "Остановлено. Реплик собрать не успели."
+      : (e.message || "Готово, но реплик не найдено.");
+    return;
+  }
+  let html = e.stopped
+    ? `⏹ Остановлено. Успели собрать <b>${e.lines}</b> реплик.`
+    : `Готово: собрано <b>${e.lines}</b> реплик.`;
   if (e.link) html += `<br>🔗 <a href="${esc(e.link)}" target="_blank">${esc(e.link)}</a>`;
   else if (e.remote_path) html += `<br>Загружено: <code>${esc(e.remote_path)}</code>`;
   if (e.download) html += `<br>⬇ <a href="${esc(e.download)}">Скачать файл</a>`;
@@ -199,6 +227,7 @@ $("load-channels").onclick = loadChannels;
 $("channel-search").oninput = renderChannels;
 $("browse-folders").onclick = browseFolders;
 $("run").onclick = run;
+$("stop").onclick = stop;
 $("select-all").onclick = (e) => { e.preventDefault(); channels.forEach((c) => selected.add(c.id)); renderChannels(); };
 $("select-none").onclick = (e) => { e.preventDefault(); selected.clear(); renderChannels(); };
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSettings(); });

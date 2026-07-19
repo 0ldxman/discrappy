@@ -83,6 +83,9 @@ textarea.area { resize: vertical; min-height: 64px; font-family: var(--mono); fo
 .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .btn.primary:hover { filter: brightness(1.06); }
 .btn.ghost { background: transparent; }
+.btn.danger { background: var(--err); color: #fff; border-color: var(--err); }
+.btn.danger:hover { filter: brightness(1.08); }
+.btn:disabled { opacity: .55; cursor: default; }
 .btn.icon { padding: 6px 10px; }
 .btn.big { width: 100%; margin-top: 14px; padding: 11px; font-weight: 600; }
 

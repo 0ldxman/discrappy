@@ -81,6 +81,8 @@ def _parse_dt(value: str | None, cfg: core.ScrapeConfig) -> datetime | None:
 
 async def _run_job(job: Job, params: dict) -> None:
     q = job.queue
+    total_lines = 0
+    total_seen = 0
 
     async def emit(event: dict) -> None:
         await q.put(event)
@@ -101,8 +103,6 @@ async def _run_job(job: Job, params: dict) -> None:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         job.output_path = OUTPUT_DIR / f"{job.id}.txt"
 
-        total_lines = 0
-        total_seen = 0
         with open(job.output_path, "w", encoding="utf-8") as out:
             for ch in channels:
                 ch_id = str(ch["id"])
@@ -163,6 +163,12 @@ async def _run_job(job: Job, params: dict) -> None:
             result["remote_path"] = remote_path
             result["link"] = link
         await emit(result)
+    except asyncio.CancelledError:
+        # Пользователь нажал «Стоп»: сообщаем о частичном результате и выходим.
+        await q.put({
+            "type": "done", "stopped": True, "lines": total_lines,
+            "download": f"/api/scrape/{job.id}/download" if total_lines else None,
+        })
     except Exception as exc:  # noqa: BLE001 — доносим ошибку в UI
         await q.put({"type": "error", "message": str(exc)})
     finally:
@@ -228,6 +234,17 @@ async def start_scrape(params: dict) -> dict:
     JOBS[job.id] = job
     job.task = asyncio.create_task(_run_job(job, params))
     return {"job_id": job.id}
+
+
+@app.post("/api/scrape/{job_id}/stop")
+async def stop_scrape(job_id: str) -> dict:
+    """Принудительно останавливает задачу скрэппинга (отменяет фоновую корутину)."""
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Задача не найдена.")
+    if job.task and not job.task.done():
+        job.task.cancel()
+    return {"stopping": True}
 
 
 @app.get("/api/scrape/{job_id}/events")

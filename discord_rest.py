@@ -124,6 +124,21 @@ async def get_channels(token: str, guild_id: str) -> list[Channel]:
     return channels
 
 
+async def get_channel(token: str, channel_id: str) -> dict:
+    """Объект канала (нужен last_message_id для оценки прогресса)."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        return await _get(client, token, f"/channels/{channel_id}")
+
+
+async def get_first_message_id(token: str, channel_id: str) -> str | None:
+    """ID самого старого сообщения канала (якорь начала для прогресса)."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        data = await _get(
+            client, token, f"/channels/{channel_id}/messages", after=0, limit=1
+        )
+    return data[0]["id"] if data else None
+
+
 async def get_recent_messages(
     token: str, channel_id: str, limit: int = 50
 ) -> list[dict]:

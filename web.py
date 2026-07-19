@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -64,9 +65,13 @@ def _cfg_from_params(p: dict) -> core.ScrapeConfig:
         author_ids=p.get("author_ids", ""),
         name_whitelist=p.get("character_names", ""),
         name_blacklist=p.get("name_blacklist", ""),
-        text_blacklist=p.get("text_blacklist", ""),
+        text_contains=p.get("text_contains", ""),
+        text_masks=p.get("text_masks", ""),
+        text_fuzzy=p.get("text_fuzzy", ""),
+        fuzzy_threshold=p.get("fuzzy_threshold", ""),
         timezone=p.get("timezone", ""),
         time_format=p.get("time_format", ""),
+        output_format=p.get("output_format", ""),
     )
 
 
@@ -77,6 +82,33 @@ def _parse_dt(value: str | None, cfg: core.ScrapeConfig) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=cfg.timezone) if cfg.timezone else dt.astimezone()
     return dt
+
+
+async def _channel_bounds(token, ch_id, after, before):
+    """Границы диапазона ID канала для прогресс-бара + отметка старта времени."""
+    t0 = time.monotonic()
+    start_id = end_id = 0
+    try:
+        start_id = (discord_rest.datetime_to_snowflake(after) if after
+                    else int(await discord_rest.get_first_message_id(token, ch_id) or 0))
+        if before:
+            end_id = discord_rest.datetime_to_snowflake(before)
+        else:
+            ch = await discord_rest.get_channel(token, ch_id)
+            end_id = int(ch.get("last_message_id") or 0)
+    except Exception:  # noqa: BLE001 — прогресс необязателен, не валим задачу
+        pass
+    return start_id, end_id, t0
+
+
+def _progress(cur: int, start: int, end: int, t0: float):
+    """(процент, ETA сек) по позиции ID в диапазоне. None если оценить нельзя."""
+    if not end or end <= start:
+        return (None, None)
+    frac = min(max((cur - start) / (end - start), 0.0), 1.0)
+    elapsed = time.monotonic() - t0
+    eta = round(elapsed * (1 - frac) / frac) if frac > 0.02 else None
+    return (round(frac * 100, 1), eta)
 
 
 async def _run_job(job: Job, params: dict) -> None:
@@ -100,16 +132,35 @@ async def _run_job(job: Job, params: dict) -> None:
         if not channels:
             raise RuntimeError("Не выбран ни один канал.")
 
+        obsidian = cfg.output_format == "obsidian"
+        ext = ".md" if obsidian else ".txt"
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        job.output_path = OUTPUT_DIR / f"{job.id}.txt"
+        job.output_path = OUTPUT_DIR / f"{job.id}{ext}"
+        characters: set[str] = set()
 
         with open(job.output_path, "w", encoding="utf-8") as out:
-            for ch in channels:
+            if obsidian:
+                names = ", ".join(f'"{c.get("name", c["id"])}"' for c in channels)
+                out.write(
+                    "---\n"
+                    f"scraped: {datetime.now().isoformat(timespec='seconds')}\n"
+                    f"source: discord\n"
+                    f"channels: [{names}]\n"
+                    "tags: [rp-scrape]\n"
+                    "---\n\n"
+                )
+
+            for idx, ch in enumerate(channels):
                 ch_id = str(ch["id"])
                 ch_name = ch.get("name", ch_id)
-                await emit({"type": "channel", "name": ch_name, "id": ch_id})
-                if len(channels) > 1:
-                    out.write(f"# ===== {ch_name} =====\n")
+                # Оценка диапазона для прогресс-бара (по снежинкам ID).
+                start_id, end_id, t0 = await _channel_bounds(
+                    token, ch_id, after, before
+                )
+                await emit({"type": "channel", "name": ch_name, "id": ch_id,
+                            "index": idx + 1, "count": len(channels)})
+                out.write(f"\n## #{ch_name}\n\n" if obsidian
+                          else f"# ===== {ch_name} =====\n")
 
                 seen = 0
                 async for msg in discord_rest.iter_messages(
@@ -118,29 +169,34 @@ async def _run_job(job: Job, params: dict) -> None:
                     seen += 1
                     total_seen += 1
                     author_id = int(msg.get("author", {}).get("id", 0))
-                    if cfg.author_ids and author_id not in cfg.author_ids:
-                        continue
-                    created = datetime.fromisoformat(msg["timestamp"])
-                    for embed in msg.get("embeds", []):
-                        # имя персонажа: сначала author.name, затем title (фолбэк)
-                        name = (embed.get("author") or {}).get("name") or embed.get("title")
-                        desc = embed.get("description")
-                        if not core.is_character(name, desc, cfg):
-                            continue
-                        out.write(core.format_line(name, desc, created, cfg))
-                        total_lines += 1
-                        await emit({
-                            "type": "line",
-                            "channel": ch_name,
-                            "ts": core.format_timestamp(created, cfg),
-                            "name": name.strip(),
-                            "text": desc.strip(),
-                        })
-                    if seen % 200 == 0:
+                    if not (cfg.author_ids and author_id not in cfg.author_ids):
+                        created = datetime.fromisoformat(msg["timestamp"])
+                        for embed in msg.get("embeds", []):
+                            name = (embed.get("author") or {}).get("name") or embed.get("title")
+                            desc = embed.get("description")
+                            if not core.is_character(name, desc, cfg):
+                                continue
+                            out.write(core.format_line(name, desc, created, cfg))
+                            total_lines += 1
+                            characters.add(name.strip())
+                            await emit({
+                                "type": "line", "channel": ch_name,
+                                "ts": core.format_timestamp(created, cfg),
+                                "name": name.strip(), "text": desc.strip(),
+                            })
+                    if seen % 100 == 0:
+                        pct, eta = _progress(int(msg["id"]), start_id, end_id, t0)
                         await emit({"type": "progress", "seen": total_seen,
-                                    "lines": total_lines})
+                                    "lines": total_lines, "percent": pct, "eta": eta,
+                                    "channel_index": idx + 1, "count": len(channels)})
 
-        await emit({"type": "progress", "seen": total_seen, "lines": total_lines})
+            if obsidian and characters:
+                out.write("\n## Персонажи\n\n")
+                for nm in sorted(characters):
+                    out.write(f"- [[{core._wikilink(nm)}]]\n")
+
+        await emit({"type": "progress", "seen": total_seen, "lines": total_lines,
+                    "percent": 100.0, "eta": 0})
 
         if total_lines == 0:
             await emit({"type": "done", "lines": 0, "message": "Реплик не найдено."})
@@ -148,13 +204,14 @@ async def _run_job(job: Job, params: dict) -> None:
 
         upload = params.get("upload", True)
         result: dict = {"type": "done", "lines": total_lines,
+                        "characters": len(characters),
                         "download": f"/api/scrape/{job.id}/download"}
         if upload:
             nc = nextcloud.NextcloudConfig.from_mapping(stored)
             ts_tag = datetime.now().strftime("%Y%m%d-%H%M%S")
-            filename = params.get("filename", "").strip() or f"scrape-{ts_tag}.txt"
-            if not filename.endswith(".txt"):
-                filename += ".txt"
+            filename = params.get("filename", "").strip() or f"scrape-{ts_tag}"
+            if not filename.endswith((".txt", ".md")):
+                filename += ext
             await emit({"type": "status", "message": "Заливаю на Nextcloud…"})
             remote_path, link = await nextcloud.upload_and_share(
                 nc, str(job.output_path), filename,
@@ -331,10 +388,17 @@ async def scrape_events(job_id: str) -> StreamingResponse:
 @app.get("/api/scrape/{job_id}/download")
 async def download(job_id: str):
     job = JOBS.get(job_id)
-    path = job.output_path if job else (OUTPUT_DIR / f"{job_id}.txt")
+    path = job.output_path if job and job.output_path else None
+    if not path:  # задача уже удалена из памяти — ищем файл по обоим расширениям
+        for ext in (".md", ".txt"):
+            cand = OUTPUT_DIR / f"{job_id}{ext}"
+            if cand.exists():
+                path = cand
+                break
     if not path or not Path(path).exists():
         raise HTTPException(404, "Файл не найден (возможно, задача ещё идёт).")
-    return FileResponse(path, filename=f"scrape-{job_id}.txt", media_type="text/plain")
+    return FileResponse(path, filename=f"scrape-{job_id}{Path(path).suffix}",
+                        media_type="text/plain")
 
 
 # Статика и index — монтируем последними, чтобы не перехватывать /api/*.

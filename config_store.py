@@ -42,6 +42,14 @@ _DEFAULTS: dict = {
     "timezone": "",
     "time_format": "%Y-%m-%d %H:%M:%S",
     "output_format": "obsidian",  # "obsidian" | "txt"
+    # --- режим сбора ---
+    "mode": "both",               # "both" | "embeds" | "text"
+    # --- сбор из текста ---
+    "text_name_patterns": "({name}) {text}\n`{name}` {text}",
+    "text_fallback_nick": "",     # "" = выкл
+    "text_ignore_bots": "true",
+    "text_command_prefixes": "! . /",
+    "text_ooc_prefixes": "(( // [",
 }
 
 

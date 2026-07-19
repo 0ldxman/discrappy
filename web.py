@@ -72,6 +72,12 @@ def _cfg_from_params(p: dict) -> core.ScrapeConfig:
         timezone=p.get("timezone", ""),
         time_format=p.get("time_format", ""),
         output_format=p.get("output_format", ""),
+        mode=p.get("mode", ""),
+        text_name_patterns=p.get("text_name_patterns", ""),
+        text_fallback_nick=p.get("text_fallback_nick"),
+        text_ignore_bots=p.get("text_ignore_bots"),
+        text_command_prefixes=p.get("text_command_prefixes", ""),
+        text_ooc_prefixes=p.get("text_ooc_prefixes", ""),
     )
 
 
@@ -168,22 +174,34 @@ async def _run_job(job: Job, params: dict) -> None:
                 ):
                     seen += 1
                     total_seen += 1
-                    author_id = int(msg.get("author", {}).get("id", 0))
-                    if not (cfg.author_ids and author_id not in cfg.author_ids):
-                        created = datetime.fromisoformat(msg["timestamp"])
+                    author = msg.get("author", {})
+                    author_id = int(author.get("id", 0))
+                    created = datetime.fromisoformat(msg["timestamp"])
+
+                    async def _write(nm, txt):
+                        nonlocal total_lines
+                        out.write(core.format_line(nm, txt, created, cfg))
+                        total_lines += 1
+                        characters.add(nm.strip())
+                        await emit({"type": "line", "channel": ch_name,
+                                    "ts": core.format_timestamp(created, cfg),
+                                    "name": nm.strip(), "text": txt.strip()})
+
+                    # эмбеды (фильтр по author_ids — только здесь)
+                    if cfg.collect_embeds and not (cfg.author_ids and author_id not in cfg.author_ids):
                         for embed in msg.get("embeds", []):
                             name = (embed.get("author") or {}).get("name") or embed.get("title")
                             desc = embed.get("description")
-                            if not core.is_character(name, desc, cfg):
-                                continue
-                            out.write(core.format_line(name, desc, created, cfg))
-                            total_lines += 1
-                            characters.add(name.strip())
-                            await emit({
-                                "type": "line", "channel": ch_name,
-                                "ts": core.format_timestamp(created, cfg),
-                                "name": name.strip(), "text": desc.strip(),
-                            })
+                            if core.is_character(name, desc, cfg):
+                                await _write(name, desc)
+
+                    # обычный текст от лица персонажа
+                    if cfg.collect_text:
+                        nm, txt, reason = core.extract_text_reply(
+                            msg.get("content"), cfg, author)
+                        if reason is None:
+                            await _write(nm, txt)
+
                     if seen % 100 == 0:
                         pct, eta = _progress(int(msg["id"]), start_id, end_id, t0)
                         await emit({"type": "progress", "seen": total_seen,
@@ -311,31 +329,39 @@ async def preview(payload: dict) -> dict:
     items: list[dict] = []
     kept = 0
     dropped: dict[str, int] = {}
+
+    def add(kind, ts, name, text, ok, reason, **extra):
+        nonlocal kept
+        items.append({"kind": kind, "ts": ts, "name": (name or "").strip(),
+                      "text": (text or "").strip()[:280], "kept": ok,
+                      "reason": reason, **extra})
+        if ok:
+            kept += 1
+        else:
+            dropped[reason] = dropped.get(reason, 0) + 1
+
     for msg in messages:
-        author_id = int(msg.get("author", {}).get("id", 0))
-        created = datetime.fromisoformat(msg["timestamp"])
-        for embed in msg.get("embeds", []):
-            name = (embed.get("author") or {}).get("name") or embed.get("title")
-            desc = embed.get("description")
-            if cfg.author_ids and author_id not in cfg.author_ids:
-                ok, reason = False, "другой автор"
-            else:
-                ok, reason = core.classify(name, desc, cfg)
-            items.append({
-                "ts": core.format_timestamp(created, cfg),
-                "name": (name or "").strip(),
-                "text": (desc or "").strip()[:280],
-                "color": embed.get("color"),
-                "has_thumbnail": "thumbnail" in embed,
-                "has_fields": bool(embed.get("fields")),
-                "author_id": str(author_id),
-                "kept": ok,
-                "reason": reason,
-            })
-            if ok:
-                kept += 1
-            else:
-                dropped[reason] = dropped.get(reason, 0) + 1
+        author = msg.get("author", {})
+        author_id = int(author.get("id", 0))
+        ts = core.format_timestamp(datetime.fromisoformat(msg["timestamp"]), cfg)
+
+        if cfg.collect_embeds:
+            for embed in msg.get("embeds", []):
+                name = (embed.get("author") or {}).get("name") or embed.get("title")
+                desc = embed.get("description")
+                if cfg.author_ids and author_id not in cfg.author_ids:
+                    ok, reason = False, "другой автор"
+                else:
+                    ok, reason = core.classify(name, desc, cfg)
+                add("embed", ts, name, desc, ok, reason,
+                    color=embed.get("color"), has_thumbnail="thumbnail" in embed,
+                    has_fields=bool(embed.get("fields")))
+
+        if cfg.collect_text and (msg.get("content") or "").strip():
+            nm, txt, reason = core.extract_text_reply(msg.get("content"), cfg, author)
+            display = nm if nm else core.text_display_name(author)
+            add("text", ts, display, txt or msg.get("content"), reason is None, reason or "ок",
+                color=None, has_thumbnail=False, has_fields=False)
 
     return {"total": len(items), "kept": kept, "dropped": dropped, "items": items}
 

@@ -37,17 +37,24 @@
       <section class="card">
         <div class="card-head"><h2>2 · Параметры и запуск</h2></div>
         <div class="fields">
-          <label class="field">Дата от <span class="hint">ISO</span>
-            <input id="after" class="input" placeholder="2026-01-01">
-          </label>
-          <label class="field">Дата до <span class="hint">ISO</span>
-            <input id="before" class="input" placeholder="2026-07-01">
+          <label class="field">Режим сбора
+            <select id="mode" class="input">
+              <option value="both">Текст + Эмбеды</option>
+              <option value="embeds">Только эмбеды</option>
+              <option value="text">Только текст</option>
+            </select>
           </label>
           <label class="field">Формат вывода
             <select id="output_format" class="input">
               <option value="obsidian">Obsidian (.md, [[имена]])</option>
               <option value="txt">Обычный текст (.txt)</option>
             </select>
+          </label>
+          <label class="field">Дата от <span class="hint">ISO</span>
+            <input id="after" class="input" placeholder="2026-01-01">
+          </label>
+          <label class="field">Дата до <span class="hint">ISO</span>
+            <input id="before" class="input" placeholder="2026-07-01">
           </label>
           <label class="field">Имя файла <span class="hint">без расширения</span>
             <input id="filename" class="input" placeholder="scrape-<дата>">
@@ -156,6 +163,27 @@
               <textarea id="text_masks" class="input area" placeholder="*вошёл в игру*"></textarea>
             </label>
           </details>
+        </fieldset>
+
+        <fieldset>
+          <legend>Сбор из текста</legend>
+          <p class="fs-hint">Работает в режимах «Текст» и «Текст + Эмбеды». Реплики от лица
+            персонажа берутся из обычных сообщений по шаблону имени.</p>
+          <label class="field">Шаблоны имени <span class="hint">{name} — имя, {text} — реплика; по одному на строку</span>
+            <textarea id="text_name_patterns" class="input area" placeholder="({name}) {text}&#10;`{name}` {text}"></textarea>
+          </label>
+          <label class="switch" style="margin:8px 0"><input type="checkbox" id="text_fallback_nick">
+            <span>Если шаблон не совпал — брать имя автора (fallback на ник)</span></label>
+          <label class="switch" style="margin:8px 0"><input type="checkbox" id="text_ignore_bots">
+            <span>Пропускать сообщения ботов</span></label>
+          <div class="fields">
+            <label class="field">Префиксы команд <span class="hint">через пробел</span>
+              <input id="text_command_prefixes" class="input" placeholder="! . /">
+            </label>
+            <label class="field">Префиксы OOC <span class="hint">через пробел</span>
+              <input id="text_ooc_prefixes" class="input" placeholder="(( // [">
+            </label>
+          </div>
         </fieldset>
 
         <fieldset>

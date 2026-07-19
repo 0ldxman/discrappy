@@ -59,6 +59,36 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _parse_tokens(raw: str | None) -> list[str]:
+    """Список коротких токенов (префиксов) по пробелам/запятым/строкам."""
+    if not raw:
+        return []
+    return [p for p in re.split(r"[\s,]+", raw.strip()) if p]
+
+
+def _as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on", "да")
+
+
+def _compile_name_templates(lines: list[str]) -> list[re.Pattern]:
+    """Шаблоны с {name}/{text} -> регулярки с именованными группами.
+    Пример: `({name}) {text}` ловит «(Джон Фрай) Привет»."""
+    patterns: list[re.Pattern] = []
+    for line in lines:
+        if "{name}" not in line:
+            continue
+        rx = re.escape(line)
+        rx = rx.replace(r"\{name\}", r"(?P<name>.+?)")
+        if r"\{text\}" in rx:
+            rx = rx.replace(r"\{text\}", r"(?P<text>.*)")
+        else:
+            rx += r"(?P<text>.*)"  # если {text} не указан — остаток строки
+        patterns.append(re.compile(r"^\s*" + rx, re.IGNORECASE | re.DOTALL))
+    return patterns
+
+
 @dataclass
 class ScrapeConfig:
     """Настройки скрэппинга (что считать персонажем, фильтры, формат)."""
@@ -73,6 +103,21 @@ class ScrapeConfig:
     timezone: ZoneInfo | None = None
     time_format: str = "%Y-%m-%d %H:%M:%S"
     output_format: str = "obsidian"                             # "obsidian" | "txt"
+    # --- режим сбора и настройки текстового режима ---
+    mode: str = "both"                                          # "both" | "embeds" | "text"
+    text_name_patterns: list[re.Pattern] = field(default_factory=list)
+    text_fallback_nick: bool = False
+    text_ignore_bots: bool = True
+    text_command_prefixes: list[str] = field(default_factory=list)
+    text_ooc_prefixes: list[str] = field(default_factory=list)
+
+    @property
+    def collect_embeds(self) -> bool:
+        return self.mode in ("both", "embeds")
+
+    @property
+    def collect_text(self) -> bool:
+        return self.mode in ("both", "text")
 
     @classmethod
     def build(
@@ -88,6 +133,12 @@ class ScrapeConfig:
         timezone: str | None = None,
         time_format: str | None = None,
         output_format: str | None = None,
+        mode: str | None = None,
+        text_name_patterns: str | None = None,
+        text_fallback_nick=None,
+        text_ignore_bots=None,
+        text_command_prefixes: str | None = None,
+        text_ooc_prefixes: str | None = None,
     ) -> "ScrapeConfig":
         tz = (timezone or "").strip()
         try:
@@ -105,6 +156,12 @@ class ScrapeConfig:
             timezone=ZoneInfo(tz) if tz else None,
             time_format=(time_format or "").strip() or "%Y-%m-%d %H:%M:%S",
             output_format=(output_format or "obsidian").strip().lower(),
+            mode=(mode or "both").strip().lower(),
+            text_name_patterns=_compile_name_templates(_parse_lines(text_name_patterns)),
+            text_fallback_nick=_as_bool(text_fallback_nick),
+            text_ignore_bots=_as_bool(text_ignore_bots) if text_ignore_bots is not None else True,
+            text_command_prefixes=_parse_tokens(text_command_prefixes),
+            text_ooc_prefixes=_parse_tokens(text_ooc_prefixes),
         )
 
     @classmethod
@@ -120,6 +177,12 @@ class ScrapeConfig:
             timezone=os.getenv("TIMEZONE"),
             time_format=os.getenv("TIME_FORMAT"),
             output_format=os.getenv("OUTPUT_FORMAT"),
+            mode=os.getenv("MODE"),
+            text_name_patterns=os.getenv("TEXT_NAME_PATTERNS"),
+            text_fallback_nick=os.getenv("TEXT_FALLBACK_NICK"),
+            text_ignore_bots=os.getenv("TEXT_IGNORE_BOTS"),
+            text_command_prefixes=os.getenv("TEXT_COMMAND_PREFIXES"),
+            text_ooc_prefixes=os.getenv("TEXT_OOC_PREFIXES"),
         )
 
 
@@ -171,6 +234,48 @@ def classify(
 
 def is_character(name: str | None, description: str | None, cfg: ScrapeConfig) -> bool:
     return classify(name, description, cfg)[0]
+
+
+def text_display_name(author: dict | None) -> str:
+    a = author or {}
+    return (a.get("global_name") or a.get("username") or "").strip()
+
+
+def extract_text_reply(
+    content: str | None, cfg: ScrapeConfig, author: dict | None = None
+) -> tuple[str | None, str | None, str | None]:
+    """
+    Разбор обычного (не-embed) сообщения в режиме «Текст».
+    Возвращает (имя, текст, причина_отбраковки|None). None в причине = взято.
+    Имя ищется по шаблонам {name}/{text}; при отсутствии — опц. по имени автора.
+    """
+    if not content or not content.strip():
+        return (None, None, "пустой текст")
+    if cfg.text_ignore_bots and (author or {}).get("bot"):
+        return (None, None, "бот")
+    stripped = content.lstrip()
+    if any(stripped.startswith(p) for p in cfg.text_ooc_prefixes):
+        return (None, None, "OOC")
+    if any(stripped.startswith(p) for p in cfg.text_command_prefixes):
+        return (None, None, "команда")
+
+    name: str | None = None
+    text = content.strip()
+    for pat in cfg.text_name_patterns:
+        m = pat.match(content)
+        if m:
+            name = (m.group("name") or "").strip()
+            text = (m.group("text") or "").strip()
+            break
+    if name is None:
+        if cfg.text_fallback_nick:
+            name = text_display_name(author)
+            text = content.strip()
+        else:
+            return (None, None, "нет маски имени")
+
+    ok, reason = classify(name, text, cfg)
+    return (name, text, None if ok else reason)
 
 
 def format_timestamp(created_at: datetime, cfg: ScrapeConfig) -> str:

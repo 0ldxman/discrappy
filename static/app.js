@@ -7,8 +7,10 @@ const CONFIG_FIELDS = [
   "guild_id", "nextcloud_url", "nextcloud_user", "nextcloud_dir",
   "author_ids", "character_names", "name_blacklist",
   "text_contains", "text_masks", "text_fuzzy", "fuzzy_threshold",
-  "timezone", "time_format", "output_format",
+  "timezone", "time_format", "output_format", "mode",
+  "text_name_patterns", "text_command_prefixes", "text_ooc_prefixes",
 ];
+const BOOL_FIELDS = ["text_fallback_nick", "text_ignore_bots"];
 const SECRET_FIELDS = ["discord_token", "nextcloud_app_password"];
 
 let channels = [];
@@ -19,6 +21,7 @@ const selected = new Set();
 async function loadConfig() {
   const cfg = await fetch("/api/config").then((r) => r.json());
   CONFIG_FIELDS.forEach((f) => { if ($(f) && cfg[f] != null && cfg[f] !== "") $(f).value = cfg[f]; });
+  BOOL_FIELDS.forEach((f) => { if ($(f)) $(f).checked = ["true", "1", "yes", "on"].includes(String(cfg[f]).toLowerCase()); });
   SECRET_FIELDS.forEach((f) => {
     const badge = $(`${f}_state`);
     if (badge) {
@@ -34,6 +37,7 @@ async function loadConfig() {
 async function saveConfig() {
   const payload = {};
   CONFIG_FIELDS.forEach((f) => { payload[f] = $(f).value.trim(); });
+  BOOL_FIELDS.forEach((f) => { payload[f] = $(f).checked; });
   SECRET_FIELDS.forEach((f) => { if ($(f).value) payload[f] = $(f).value; });
   const status = $("settings-status");
   status.textContent = "Сохраняю…";
@@ -117,7 +121,7 @@ async function preview() {
   try {
     const res = await fetch("/api/preview", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channel_id: first.id, limit: 50 }),
+      body: JSON.stringify({ channel_id: first.id, limit: 50, mode: $("mode").value }),
     });
     if (!res.ok) throw new Error((await res.json()).detail || "ошибка");
     renderPreview(await res.json(), first.name);
@@ -132,15 +136,16 @@ function renderPreview(data, chanName) {
   const rows = data.items.map((it) => {
     const sw = it.color != null
       ? `<span class="swatch" style="background:${hex(it.color)}" title="${hex(it.color)}"></span>` : "—";
+    const kind = it.kind === "text" ? "💬 текст" : "🔲 эмбед";
     return `<tr class="${it.kept ? "kept" : "drop"}">
-      <td>${esc(it.ts)}</td><td class="nm">${esc(it.name) || "—"}</td>
+      <td>${esc(it.ts)}</td><td class="ctr">${kind}</td><td class="nm">${esc(it.name) || "—"}</td>
       <td class="ctr">${sw}</td><td class="ctr">${it.has_thumbnail ? "🖼" : "·"}</td>
       <td class="ctr">${it.has_fields ? "🔖" : "·"}</td>
       <td class="verdict">${it.kept ? "✓ взято" : esc(it.reason)}</td>
       <td class="txt">${esc(it.text)}</td></tr>`;
   }).join("");
   $("preview-table").innerHTML =
-    `<thead><tr><th>время</th><th>имя</th><th>цвет</th><th>🖼</th><th>🔖</th><th>вердикт</th><th>текст</th></tr></thead>
+    `<thead><tr><th>время</th><th>тип</th><th>имя</th><th>цвет</th><th>🖼</th><th>🔖</th><th>вердикт</th><th>текст</th></tr></thead>
      <tbody>${rows}</tbody>`;
 }
 
@@ -258,7 +263,7 @@ function run() {
   const base = {
     after: $("after").value.trim(), before: $("before").value.trim(),
     filename: $("filename").value.trim(), dest_dir: $("dest_dir").value.trim(),
-    output_format: $("output_format").value,
+    output_format: $("output_format").value, mode: $("mode").value,
     upload: $("upload").checked, share: $("share").checked,
   };
   if ($("per_channel").checked) chosen.forEach((c) => startRun([c], base));

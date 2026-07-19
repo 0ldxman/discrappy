@@ -83,8 +83,15 @@ def format_line(
     return f"[{ts}] ({title.strip()}): {description.strip()}\n"
 
 
+def embed_char_name(embed: discord.Embed) -> str | None:
+    """Имя персонажа: сначала embed.author.name, затем embed.title (фолбэк)."""
+    author = getattr(embed, "author", None)
+    name = getattr(author, "name", None) if author else None
+    return name or embed.title
+
+
 def is_character_embed(embed: discord.Embed, names: set[str]) -> bool:
-    return is_character(embed.title, embed.description, names)
+    return is_character(embed_char_name(embed), embed.description, names)
 
 
 async def scrape_channel(
@@ -115,11 +122,10 @@ async def scrape_channel(
                 continue
 
             for embed in message.embeds:
-                if not is_character_embed(embed, cfg.character_names):
+                name = embed_char_name(embed)
+                if not is_character(name, embed.description, cfg.character_names):
                     continue
-                out.write(
-                    format_line(embed.title, embed.description, message.created_at, cfg)
-                )
+                out.write(format_line(name, embed.description, message.created_at, cfg))
                 lines += 1
 
             if progress and messages_seen % 1000 == 0:

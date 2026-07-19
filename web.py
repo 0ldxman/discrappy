@@ -122,17 +122,18 @@ async def _run_job(job: Job, params: dict) -> None:
                         continue
                     created = datetime.fromisoformat(msg["timestamp"])
                     for embed in msg.get("embeds", []):
-                        title = embed.get("title")
+                        # имя персонажа: сначала author.name, затем title (фолбэк)
+                        name = (embed.get("author") or {}).get("name") or embed.get("title")
                         desc = embed.get("description")
-                        if not core.is_character(title, desc, cfg.character_names):
+                        if not core.is_character(name, desc, cfg.character_names):
                             continue
-                        out.write(core.format_line(title, desc, created, cfg))
+                        out.write(core.format_line(name, desc, created, cfg))
                         total_lines += 1
                         await emit({
                             "type": "line",
                             "channel": ch_name,
                             "ts": core.format_timestamp(created, cfg),
-                            "name": title.strip(),
+                            "name": name.strip(),
                             "text": desc.strip(),
                         })
                     if seen % 200 == 0:

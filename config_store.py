@@ -52,6 +52,9 @@ def load() -> dict:
         data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
     merged = dict(_DEFAULTS)
     merged.update({k: v for k, v in data.items() if k in _DEFAULTS})
+    # миграция: старый ключ text_blacklist (маски) -> text_masks
+    if data.get("text_blacklist") and not merged.get("text_masks"):
+        merged["text_masks"] = data["text_blacklist"]
     return merged
 
 

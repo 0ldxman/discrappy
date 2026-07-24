@@ -25,6 +25,16 @@ export interface RunSummary {
   message_count: number;
 }
 
+// Роль реплики в повествовании. Пустая строка — не размечено.
+export type Role = "" | "speech" | "action" | "narration" | "ooc";
+
+export const ROLE_LABELS: Record<Exclude<Role, "">, string> = {
+  speech: "речь",
+  action: "действие",
+  narration: "нарратив",
+  ooc: "OOC",
+};
+
 export interface Message {
   id: number;
   run_id: string;
@@ -36,6 +46,11 @@ export interface Message {
   content: string;
   kind: "embed" | "text";
   discord_msg_id: string;
+  seq: number; // порядок повествования
+  role: Role;
+  hidden: boolean;
+  scene_title: string; // непустой — сообщение открывает сцену
+  note: string;
 }
 
 export interface MessagePage {
@@ -46,9 +61,65 @@ export interface MessagePage {
 export interface AuthorCount {
   author: string;
   count: number;
+  hidden: number;
+  first_ts: string;
+  last_ts: string;
+  chars: number;
 }
 
-export type ExportFormat = "txt" | "obsidian" | "csv" | "json";
+export interface ChatCount {
+  chat_name: string;
+  count: number;
+}
+
+export interface Scene {
+  id: number;
+  seq: number;
+  title: string;
+  ts: string;
+  chat_name: string;
+}
+
+export interface EditEntry {
+  id: number;
+  created_at: string;
+  label: string;
+  undone: boolean;
+}
+
+export interface History {
+  items: EditEntry[];
+  undo_label: string | null;
+  redo_label: string | null;
+}
+
+// Общий ответ массовых операций в режиме предпросмотра.
+export interface DiffItem {
+  id: number;
+  author: string;
+  before: string;
+  after: string;
+  hits: number;
+}
+
+export interface DiffPreview {
+  changed: number;
+  items: DiffItem[];
+}
+
+export interface SplitPreviewItem {
+  id: number;
+  author: string;
+  before: string;
+  parts: { content: string; author: string; role: Role }[];
+}
+
+export interface SplitPreview {
+  changed: number;
+  items: SplitPreviewItem[];
+}
+
+export type ExportFormat = "txt" | "obsidian" | "story" | "csv" | "json";
 
 // Публичное представление конфига (секреты — как флаги *_set).
 export interface PublicConfig {

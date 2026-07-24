@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ import core
 import db
 import discord_rest
 import exporters
+import narrative
 import nextcloud
 
 BASE_DIR = Path(__file__).parent
@@ -467,13 +469,17 @@ async def api_delete_run(run_id: str) -> dict:
 
 
 @app.get("/api/runs/{run_id}/messages")
-async def api_messages(run_id: str, author: str = "", after: str = "", before: str = "",
-                       q: str = "", sort: str = "ts", order: str = "asc",
+async def api_messages(run_id: str, author: str = "", authors: str = "",
+                       after: str = "", before: str = "", q: str = "",
+                       role: str = "", hidden: str = "", chat: str = "",
+                       sort: str = "seq", order: str = "asc",
                        limit: int = 100, offset: int = 0) -> dict:
     if not db.get_run(run_id):
         raise HTTPException(404, "Прогон не найден.")
-    return db.query_messages(run_id, author=author or None, after=after or None,
-                             before=before or None, q=q or None, sort=sort,
+    names = _author_list(authors) or ([author] if author else None)
+    return db.query_messages(run_id, authors=names, after=after or None,
+                             before=before or None, q=q or None, role=role or None,
+                             hidden=hidden or None, chat=chat or None, sort=sort,
                              order=order, limit=limit, offset=offset)
 
 
@@ -482,10 +488,24 @@ async def api_authors(run_id: str) -> list[dict]:
     return db.list_authors(run_id)
 
 
+@app.get("/api/runs/{run_id}/chats")
+async def api_chats(run_id: str) -> list[dict]:
+    return db.list_chats(run_id)
+
+
+@app.get("/api/runs/{run_id}/scenes")
+async def api_scenes(run_id: str) -> list[dict]:
+    return db.list_scenes(run_id)
+
+
 @app.patch("/api/messages/{msg_id}")
 async def api_update_message(msg_id: int, payload: dict) -> dict:
-    ok = db.update_message(msg_id, author=payload.get("author"),
-                           content=payload.get("content"))
+    ok = db.update_message(
+        msg_id,
+        author=payload.get("author"), content=payload.get("content"),
+        role=payload.get("role"), hidden=payload.get("hidden"),
+        scene_title=payload.get("scene_title"), note=payload.get("note"),
+    )
     if not ok:
         raise HTTPException(404, "Сообщение не найдено или нечего менять.")
     return {"updated": True}
@@ -515,6 +535,289 @@ async def api_rename_author(run_id: str, payload: dict) -> dict:
     return {"updated": n}
 
 
+@app.post("/api/runs/{run_id}/merge-authors")
+async def api_merge_authors(run_id: str, payload: dict) -> dict:
+    """Сводит несколько написаний имени персонажа к одному каноническому."""
+    sources = [s.strip() for s in (payload.get("sources") or []) if s and s.strip()]
+    target = (payload.get("target") or "").strip()
+    if not sources or not target:
+        raise HTTPException(400, "Нужны sources и target.")
+    return {"updated": db.merge_authors(run_id, sources, target)}
+
+
+# ------------------- Разрезание, вставка, объединение ------------------------
+
+def _known_authors(run_id: str) -> set[str]:
+    return {a["author"] for a in db.list_authors(run_id) if a["author"]}
+
+
+def _author_list(raw: str) -> list[str] | None:
+    """Параметр authors — имена через перевод строки (запятая может быть в имени)."""
+    names = [n for n in (raw or "").split("\n") if n.strip()]
+    return names or None
+
+
+def _to_parts(fragments: list[str], base_author: str, known: set[str],
+              extract: bool) -> list[dict]:
+    """
+    Фрагменты текста → заготовки сообщений.
+
+    Роль определяется по исходному фрагменту (префикс «(Имя) - » сам по себе
+    признак прямой речи), поэтому считается до отрезания имени.
+    """
+    parts: list[dict] = []
+    for fragment in fragments:
+        role = narrative.detect_role(fragment)
+        author, text = (narrative.extract_author(fragment, known) if extract
+                        else (None, fragment))
+        parts.append({"content": (text or fragment).strip(),
+                      "author": author or base_author, "role": role})
+    return parts
+
+
+@app.post("/api/messages/{msg_id}/split")
+async def api_split_message(msg_id: int, payload: dict) -> dict:
+    """
+    Режет сообщение по выделению на «до / выделенное / после».
+
+    Пустые части отбрасываются, поэтому получается 2 или 3 сообщения; все — с
+    тем же временем и подряд в порядке повествования.
+    """
+    msg = db.get_message(msg_id)
+    if not msg:
+        raise HTTPException(404, "Сообщение не найдено.")
+    fragments = narrative.split_at_selection(
+        msg["content"], int(payload.get("start", 0)), int(payload.get("end", 0)))
+    if len(fragments) < 2:
+        raise HTTPException(400, "Выделение не делит сообщение на части.")
+    extract = payload.get("extract_author", True)
+    parts = _to_parts(fragments, msg["author"], _known_authors(msg["run_id"]), extract)
+    rows = db.split_message(msg_id, parts)
+    if rows is None:
+        raise HTTPException(400, "Разрезать не получилось.")
+    return {"items": rows}
+
+
+@app.post("/api/messages/{msg_id}/split-auto")
+async def api_split_auto(msg_id: int, payload: dict) -> dict:
+    """Разрезание одного сообщения по строкам / абзацам / автоматически."""
+    msg = db.get_message(msg_id)
+    if not msg:
+        raise HTTPException(404, "Сообщение не найдено.")
+    mode = (payload.get("mode") or "smart").strip()
+    known = _known_authors(msg["run_id"])
+    fragments = narrative.split_fragments(msg["content"], mode, known)
+    if len(fragments) < 2:
+        raise HTTPException(400, "В этом сообщении нечего разделять.")
+    parts = _to_parts(fragments, msg["author"], known,
+                      payload.get("extract_author", True))
+    rows = db.split_message(msg_id, parts)
+    if rows is None:
+        raise HTTPException(400, "Разрезать не получилось.")
+    return {"items": rows}
+
+
+@app.post("/api/runs/{run_id}/messages")
+async def api_insert_message(run_id: str, payload: dict) -> dict:
+    """Вставляет пустое сообщение рядом с указанным (кнопка «+» в таблице)."""
+    if not db.get_run(run_id):
+        raise HTTPException(404, "Прогон не найден.")
+    row = db.insert_message(
+        run_id, after_id=payload.get("after_id"), before_id=payload.get("before_id"),
+        author=(payload.get("author") or "").strip(),
+        content=(payload.get("content") or "").strip(),
+        role=(payload.get("role") or "").strip(),
+    )
+    if row is None:
+        raise HTTPException(400, "Некуда вставлять: соседнее сообщение не найдено.")
+    return row
+
+
+@app.post("/api/runs/{run_id}/messages/merge")
+async def api_merge_messages(run_id: str, payload: dict) -> dict:
+    """Склеивает выбранные сообщения в одно (в порядке повествования)."""
+    ids = payload.get("ids") or []
+    if len(ids) < 2:
+        raise HTTPException(400, "Нужно выбрать хотя бы два сообщения.")
+    row = db.merge_messages(run_id, ids, separator=payload.get("separator", "\n"))
+    if row is None:
+        raise HTTPException(400, "Объединить не получилось.")
+    return row
+
+
+@app.post("/api/messages/{msg_id}/move")
+async def api_move_message(msg_id: int, payload: dict) -> dict:
+    ok = db.move_message(msg_id, after_id=payload.get("after_id"),
+                         before_id=payload.get("before_id"),
+                         direction=payload.get("direction"))
+    if not ok:
+        raise HTTPException(400, "Двигать некуда.")
+    return {"moved": True}
+
+
+@app.post("/api/messages/{msg_id}/duplicate")
+async def api_duplicate_message(msg_id: int) -> dict:
+    row = db.duplicate_message(msg_id)
+    if row is None:
+        raise HTTPException(404, "Сообщение не найдено.")
+    return row
+
+
+# --------------------------- Массовые операции -------------------------------
+
+def _scope_rows(run_id: str, payload: dict) -> list[dict]:
+    """
+    Строки, на которые действует массовая операция.
+
+    Либо явный список `ids` (выделенные строки), либо текущие фильтры таблицы —
+    чтобы «применить ко всему, что на экране» вело себя предсказуемо.
+    """
+    filters = payload.get("filters") or {}
+    return db.select_ids(
+        run_id, ids=payload.get("ids"),
+        authors=filters.get("authors"), q=filters.get("q") or None,
+        role=filters.get("role") or None, chat=filters.get("chat") or None,
+        after=filters.get("after") or None, before=filters.get("before") or None,
+        hidden=filters.get("hidden") or "all",
+    )
+
+
+def _diff_preview(changes: list[dict], limit: int = 40) -> dict:
+    return {"changed": len(changes), "items": changes[:limit]}
+
+
+@app.post("/api/runs/{run_id}/replace")
+async def api_replace(run_id: str, payload: dict) -> dict:
+    """Поиск и замена по области действия. preview=true — только показать diff."""
+    find = payload.get("find") or ""
+    if not find:
+        raise HTTPException(400, "Нечего искать.")
+    repl = payload.get("replace") or ""
+    regex = bool(payload.get("regex"))
+    case = bool(payload.get("case"))
+    changes: list[dict] = []
+    updates: dict[int, str] = {}
+    try:
+        for row in _scope_rows(run_id, payload):
+            new, n = narrative.apply_replace(row["content"], find, repl,
+                                             regex=regex, case=case)
+            if n and new != row["content"]:
+                updates[row["id"]] = new
+                changes.append({"id": row["id"], "author": row["author"],
+                                "before": row["content"], "after": new, "hits": n})
+    except re.error as exc:
+        raise HTTPException(400, f"Некорректное регулярное выражение: {exc}")
+
+    if payload.get("preview"):
+        return _diff_preview(changes)
+    label = f"Замена «{find}» → «{repl}» ({len(updates)})"
+    return {"changed": db.apply_content_updates(run_id, updates, label=label)}
+
+
+@app.post("/api/runs/{run_id}/cleanup")
+async def api_cleanup(run_id: str, payload: dict) -> dict:
+    """Пакетная чистка текста выбранными операциями (см. narrative.CLEANUP_OPS)."""
+    ops = [o for o in (payload.get("ops") or []) if o in narrative.CLEANUP_OPS]
+    if not ops:
+        raise HTTPException(400, "Не выбрана ни одна операция чистки.")
+    changes: list[dict] = []
+    updates: dict[int, str] = {}
+    for row in _scope_rows(run_id, payload):
+        new = narrative.cleanup_text(row["content"], ops)
+        if new != row["content"]:
+            updates[row["id"]] = new
+            changes.append({"id": row["id"], "author": row["author"],
+                            "before": row["content"], "after": new, "hits": 1})
+    if payload.get("preview"):
+        return _diff_preview(changes)
+    return {"changed": db.apply_content_updates(
+        run_id, updates, label=f"Чистка текста ({len(updates)})")}
+
+
+@app.post("/api/runs/{run_id}/auto-split")
+async def api_auto_split(run_id: str, payload: dict) -> dict:
+    """
+    Массовое разрезание склеенных постов.
+
+    Именно эта операция разносит «**действие**» и «(Имя) - реплика», попавшие
+    в одно сообщение Discord, по отдельным строкам лога.
+    """
+    mode = (payload.get("mode") or "smart").strip()
+    extract = payload.get("extract_author", True)
+    known = _known_authors(run_id)
+    plan: list[tuple[int, list[dict]]] = []
+    preview: list[dict] = []
+    for row in _scope_rows(run_id, payload):
+        fragments = narrative.split_fragments(row["content"], mode, known)
+        if len(fragments) < 2:
+            continue
+        parts = _to_parts(fragments, row["author"], known, extract)
+        plan.append((row["id"], parts))
+        preview.append({"id": row["id"], "author": row["author"],
+                        "before": row["content"], "parts": parts})
+    if payload.get("preview"):
+        return {"changed": len(plan), "items": preview[:40]}
+    label = f"Авто-разделение сообщений ({len(plan)})"
+    return {"changed": db.split_many(run_id, plan, label=label)}
+
+
+@app.post("/api/runs/{run_id}/detect-roles")
+async def api_detect_roles(run_id: str, payload: dict) -> dict:
+    """Расставляет роли (речь / действие / нарратив / OOC) по эвристике."""
+    updates: dict[int, str] = {}
+    preview: list[dict] = []
+    overwrite = bool(payload.get("overwrite"))
+    for row in _scope_rows(run_id, payload):
+        if row["role"] and not overwrite:
+            continue
+        role = narrative.detect_role(row["content"])
+        if role != row["role"]:
+            updates[row["id"]] = role
+            preview.append({"id": row["id"], "author": row["author"],
+                            "before": row["content"], "after": role, "hits": 1})
+    if payload.get("preview"):
+        return _diff_preview(preview)
+    return {"changed": db.apply_field_updates(
+        run_id, "role", updates, label=f"Разметка ролей ({len(updates)})")}
+
+
+@app.post("/api/runs/{run_id}/messages/set")
+async def api_bulk_set(run_id: str, payload: dict) -> dict:
+    """Массово ставит роль / скрытие / автора выбранным сообщениям."""
+    ids = payload.get("ids") or []
+    if not ids:
+        raise HTTPException(400, "Не выбрано ни одного сообщения.")
+    fields = {k: payload[k] for k in ("role", "hidden", "author") if k in payload}
+    if not fields:
+        raise HTTPException(400, "Нечего менять.")
+    labels = {"role": "Роль", "hidden": "Видимость", "author": "Автор"}
+    label = f"{labels[next(iter(fields))]}: массовая правка ({len(ids)})"
+    return {"changed": db.bulk_set(run_id, ids, label=label, **fields)}
+
+
+# ------------------------------ Отмена правок --------------------------------
+
+@app.post("/api/runs/{run_id}/undo")
+async def api_undo(run_id: str) -> dict:
+    label = db.undo(run_id)
+    if label is None:
+        raise HTTPException(400, "Отменять нечего.")
+    return {"label": label}
+
+
+@app.post("/api/runs/{run_id}/redo")
+async def api_redo(run_id: str) -> dict:
+    label = db.redo(run_id)
+    if label is None:
+        raise HTTPException(400, "Повторять нечего.")
+    return {"label": label}
+
+
+@app.get("/api/runs/{run_id}/history")
+async def api_history(run_id: str, limit: int = 30) -> dict:
+    return db.history(run_id, limit)
+
+
 def _export_doc(run_id: str, fmt: str) -> tuple[str, str, str]:
     """Собирает документ прогона в формате fmt. → (текст, расширение, mime)."""
     run = db.get_run(run_id)
@@ -528,6 +831,13 @@ def _export_doc(run_id: str, fmt: str) -> tuple[str, str, str]:
     doc = exporters.build(fmt, rows, cfg, run=run)
     ext, mime = exporters.FORMATS[fmt]
     return doc, ext, mime
+
+
+@app.get("/api/runs/{run_id}/document")
+async def api_document(run_id: str, format: str = "story") -> dict:
+    """Тот же документ, что и экспорт, но текстом в JSON — для панели предпросмотра."""
+    doc, _, _ = _export_doc(run_id, format)
+    return {"format": format, "text": doc}
 
 
 @app.get("/api/runs/{run_id}/export")
@@ -557,7 +867,8 @@ async def api_upload(run_id: str, payload: dict) -> dict:
         filename += ext
     try:
         remote_path, link = await nextcloud.upload_and_share(
-            nc, str(tmp), filename, remote_dir=payload.get("dest_dir"),
+            nc, str(tmp), filename,
+            remote_dir=(payload.get("dest_dir") or "").strip() or None,
             share=payload.get("share", True),
         )
     except Exception as exc:  # noqa: BLE001

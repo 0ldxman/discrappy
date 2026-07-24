@@ -6,3 +6,5 @@ __pycache__/
 .git/
 scrape-*.txt
 output*.txt
+frontend/node_modules/
+frontend/dist/

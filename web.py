@@ -23,16 +23,21 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 import config_store
 import core
+import db
 import discord_rest
+import exporters
 import nextcloud
 
 BASE_DIR = Path(__file__).parent
-STATIC_DIR = BASE_DIR / "static"
+# Собранный фронтенд (frontend/dist) — приоритетно; иначе старая статика.
+STATIC_DIR = Path(os.getenv("STATIC_DIR") or (BASE_DIR / "frontend" / "dist"))
+if not STATIC_DIR.exists():
+    STATIC_DIR = BASE_DIR / "static"
+INDEX_FILE = STATIC_DIR / "index.html"
 OUTPUT_DIR = Path(os.getenv("DATA_DIR", "data")) / "outputs"
 # Разрешённые источники для встраивания в iframe (Nextcloud). Напр. https://cloud.example.com
 FRAME_ANCESTORS = os.getenv("FRAME_ANCESTORS", "'self'").strip()
@@ -144,6 +149,11 @@ async def _run_job(job: Job, params: dict) -> None:
         job.output_path = OUTPUT_DIR / f"{job.id}{ext}"
         characters: set[str] = set()
 
+        # Каждый скрэппинг — «прогон» в БД; строки сохраняем туда (таблица-лог).
+        title = ", ".join(c.get("name", str(c["id"])) for c in channels)[:200]
+        db.create_run(job.id, guild_id=stored.get("guild_id", ""),
+                      channels=channels, params=params, title=title)
+
         with open(job.output_path, "w", encoding="utf-8") as out:
             if obsidian:
                 names = ", ".join(f'"{c.get("name", c["id"])}"' for c in channels)
@@ -178,11 +188,14 @@ async def _run_job(job: Job, params: dict) -> None:
                     author_id = int(author.get("id", 0))
                     created = datetime.fromisoformat(msg["timestamp"])
 
-                    async def _write(nm, txt):
+                    async def _write(nm, txt, kind):
                         nonlocal total_lines
                         out.write(core.format_line(nm, txt, created, cfg))
                         total_lines += 1
                         characters.add(nm.strip())
+                        db.add_message(job.id, chat_id=ch_id, chat_name=ch_name,
+                                       created_at=created, author=nm, author_id=author_id,
+                                       content=txt, kind=kind, discord_msg_id=msg["id"])
                         await emit({"type": "line", "channel": ch_name,
                                     "ts": core.format_timestamp(created, cfg),
                                     "name": nm.strip(), "text": txt.strip()})
@@ -193,14 +206,14 @@ async def _run_job(job: Job, params: dict) -> None:
                             name = (embed.get("author") or {}).get("name") or embed.get("title")
                             desc = embed.get("description")
                             if core.is_character(name, desc, cfg):
-                                await _write(name, desc)
+                                await _write(name, desc, "embed")
 
                     # обычный текст от лица персонажа
                     if cfg.collect_text:
                         nm, txt, reason = core.extract_text_reply(
                             msg.get("content"), cfg, author)
                         if reason is None:
-                            await _write(nm, txt)
+                            await _write(nm, txt, "text")
 
                     if seen % 100 == 0:
                         pct, eta = _progress(int(msg["id"]), start_id, end_id, t0)
@@ -217,11 +230,14 @@ async def _run_job(job: Job, params: dict) -> None:
                     "percent": 100.0, "eta": 0})
 
         if total_lines == 0:
-            await emit({"type": "done", "lines": 0, "message": "Реплик не найдено."})
+            db.set_run_status(job.id, "done")
+            await emit({"type": "done", "lines": 0, "run_id": job.id,
+                        "message": "Реплик не найдено."})
             return
 
-        upload = params.get("upload", True)
-        result: dict = {"type": "done", "lines": total_lines,
+        db.set_run_status(job.id, "done")
+        upload = params.get("upload", False)
+        result: dict = {"type": "done", "lines": total_lines, "run_id": job.id,
                         "characters": len(characters),
                         "download": f"/api/scrape/{job.id}/download"}
         if upload:
@@ -240,11 +256,13 @@ async def _run_job(job: Job, params: dict) -> None:
         await emit(result)
     except asyncio.CancelledError:
         # Пользователь нажал «Стоп»: сообщаем о частичном результате и выходим.
+        db.set_run_status(job.id, "stopped")
         await q.put({
-            "type": "done", "stopped": True, "lines": total_lines,
+            "type": "done", "stopped": True, "lines": total_lines, "run_id": job.id,
             "download": f"/api/scrape/{job.id}/download" if total_lines else None,
         })
     except Exception as exc:  # noqa: BLE001 — доносим ошибку в UI
+        db.set_run_status(job.id, "error")
         await q.put({"type": "error", "message": str(exc)})
     finally:
         await q.put(None)  # сигнал завершения SSE
@@ -427,5 +445,136 @@ async def download(job_id: str):
                         media_type="text/plain")
 
 
-# Статика и index — монтируем последними, чтобы не перехватывать /api/*.
-app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+# ----------------------- Прогоны и таблица-лог (БД) --------------------------
+
+@app.get("/api/runs")
+async def api_runs() -> list[dict]:
+    return db.list_runs()
+
+
+@app.get("/api/runs/{run_id}")
+async def api_run(run_id: str) -> dict:
+    run = db.get_run(run_id)
+    if not run:
+        raise HTTPException(404, "Прогон не найден.")
+    return run
+
+
+@app.delete("/api/runs/{run_id}")
+async def api_delete_run(run_id: str) -> dict:
+    db.delete_run(run_id)
+    return {"deleted": True}
+
+
+@app.get("/api/runs/{run_id}/messages")
+async def api_messages(run_id: str, author: str = "", after: str = "", before: str = "",
+                       q: str = "", sort: str = "ts", order: str = "asc",
+                       limit: int = 100, offset: int = 0) -> dict:
+    if not db.get_run(run_id):
+        raise HTTPException(404, "Прогон не найден.")
+    return db.query_messages(run_id, author=author or None, after=after or None,
+                             before=before or None, q=q or None, sort=sort,
+                             order=order, limit=limit, offset=offset)
+
+
+@app.get("/api/runs/{run_id}/authors")
+async def api_authors(run_id: str) -> list[dict]:
+    return db.list_authors(run_id)
+
+
+@app.patch("/api/messages/{msg_id}")
+async def api_update_message(msg_id: int, payload: dict) -> dict:
+    ok = db.update_message(msg_id, author=payload.get("author"),
+                           content=payload.get("content"))
+    if not ok:
+        raise HTTPException(404, "Сообщение не найдено или нечего менять.")
+    return {"updated": True}
+
+
+@app.delete("/api/messages/{msg_id}")
+async def api_delete_message(msg_id: int) -> dict:
+    if not db.delete_message(msg_id):
+        raise HTTPException(404, "Сообщение не найдено.")
+    return {"deleted": True}
+
+
+@app.post("/api/runs/{run_id}/messages/delete")
+async def api_bulk_delete(run_id: str, payload: dict) -> dict:
+    """Массовое удаление: по списку id и/или по автору (все сообщения автора)."""
+    n = db.delete_messages(run_id, ids=payload.get("ids"), author=payload.get("author"))
+    return {"deleted": n}
+
+
+@app.post("/api/runs/{run_id}/rename-author")
+async def api_rename_author(run_id: str, payload: dict) -> dict:
+    old = (payload.get("from") or "").strip()
+    new = (payload.get("to") or "").strip()
+    if not old or not new:
+        raise HTTPException(400, "Нужны непустые поля from и to.")
+    n = db.rename_author(run_id, old, new)
+    return {"updated": n}
+
+
+def _export_doc(run_id: str, fmt: str) -> tuple[str, str, str]:
+    """Собирает документ прогона в формате fmt. → (текст, расширение, mime)."""
+    run = db.get_run(run_id)
+    if not run:
+        raise HTTPException(404, "Прогон не найден.")
+    if fmt not in exporters.FORMATS:
+        raise HTTPException(400, f"Неизвестный формат: {fmt}")
+    stored = config_store.load()
+    cfg = _cfg_from_params({**stored, **run.get("params", {})})
+    rows = db.iter_run_messages(run_id)
+    doc = exporters.build(fmt, rows, cfg, run=run)
+    ext, mime = exporters.FORMATS[fmt]
+    return doc, ext, mime
+
+
+@app.get("/api/runs/{run_id}/export")
+async def api_export(run_id: str, format: str = "txt"):
+    doc, ext, mime = _export_doc(run_id, format)
+    filename = f"scrape-{run_id}{ext}"
+    return Response(content=doc, media_type=mime,
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.post("/api/runs/{run_id}/upload")
+async def api_upload(run_id: str, payload: dict) -> dict:
+    """Экспортирует текущее состояние прогона из БД и заливает в Nextcloud."""
+    fmt = payload.get("format", "obsidian")
+    doc, ext, _ = _export_doc(run_id, fmt)
+    stored = config_store.load()
+    try:
+        nc = nextcloud.NextcloudConfig.from_mapping(stored)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = OUTPUT_DIR / f"export-{run_id}{ext}"
+    tmp.write_text(doc, encoding="utf-8")
+    ts_tag = datetime.now().strftime("%Y%m%d-%H%M%S")
+    filename = (payload.get("filename") or f"scrape-{ts_tag}").strip()
+    if not filename.endswith(ext):
+        filename += ext
+    try:
+        remote_path, link = await nextcloud.upload_and_share(
+            nc, str(tmp), filename, remote_dir=payload.get("dest_dir"),
+            share=payload.get("share", True),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Nextcloud: {exc}")
+    return {"remote_path": remote_path, "link": link}
+
+
+# SPA: отдаём собранный фронтенд, а на неизвестные пути — index.html
+# (клиентский роутинг react-router). Объявляем последним, /api/* уже разобраны выше.
+@app.get("/{full_path:path}")
+async def spa(full_path: str):
+    if full_path.startswith("api"):
+        raise HTTPException(404, "Not found")
+    if full_path:
+        candidate = (STATIC_DIR / full_path).resolve()
+        if candidate.is_file() and STATIC_DIR.resolve() in candidate.parents:
+            return FileResponse(candidate)
+    if INDEX_FILE.exists():
+        return FileResponse(INDEX_FILE)
+    raise HTTPException(404, "UI не собран (frontend/dist отсутствует).")
